@@ -1,4 +1,5 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useHealth } from "../api/hooks";
 import { useUser, useAuth } from "../auth/AuthContext";
 import { useTicketEvents, type ConnectionState } from "../lib/useTicketEvents";
 
@@ -28,7 +29,8 @@ export function Layout() {
   const user = useUser();
   const { logout } = useAuth();
   const navigate = useNavigate();
-  const connection = useTicketEvents(true);
+  const health = useHealth();
+  const connection = useTicketEvents(health.data?.realtime);
   const nav = user.role === "ADMIN" ? ADMIN_NAV : AUTHOR_NAV;
 
   return (

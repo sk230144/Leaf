@@ -18,6 +18,10 @@ services:
         fromDatabase:
           name: bookleaf-db
           property: connectionString
+      - key: DATABASE_URL_UNPOOLED # used by `prisma migrate deploy` on boot
+        fromDatabase:
+          name: bookleaf-db
+          property: connectionString
       - key: JWT_SECRET
         generateValue: true
       - key: ANTHROPIC_API_KEY

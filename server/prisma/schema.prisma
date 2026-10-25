@@ -4,12 +4,19 @@
 // data uses whole rupees and no fractional amounts exist in the domain.
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // native for local/Docker; rhel-openssl-3.0.x for Vercel's runtime
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
+// DATABASE_URL: pooled connection used by the app (Neon "-pooler" host).
+// DATABASE_URL_UNPOOLED: direct connection used by Prisma Migrate, since
+// session-level operations don't work through PgBouncer's transaction mode.
+// Locally (Docker Postgres) both point at the same database.
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
 }
 
 // ---------------------------------------------------------------------------

@@ -278,18 +278,62 @@ The UI was checked end to end in headless Chrome: author submits a ticket → ad
 
 ## 6. Deployment
 
-The app ships as one Docker image: the API serves the built React app from the same origin, so cookies and SSE need no CORS. On boot it runs `prisma migrate deploy`, seeds the dataset **only if the database is empty**, then starts.
+The same codebase runs on two kinds of host. In both, the browser sees a single origin, so the session cookie works without CORS.
+
+### Vercel + Neon Postgres (live demo)
+
+- The React build is served from Vercel's CDN.
+- [`api/index.ts`](api/index.ts) runs the same Express app as a serverless function. [`vercel.json`](vercel.json) routes `/api/*` to it.
+- Serverless-specific behaviour, switched on automatically by the `VERCEL` env var:
+
+| Concern | Long-running server (Docker) | Vercel |
+|---|---|---|
+| Live updates | SSE push | The client polls every 5 s while the tab is visible. `/api/health` tells the client which mode to use. |
+| Background AI classification | In-process queue | Same queue, kept alive after the response with `waitUntil` |
+| Pending tickets after deploy | Re-queued on boot | Re-queued on each cold start |
+| Attachments | `server/uploads/` | `/tmp` (ephemeral, see limitations) |
+
+Steps:
+
+**How the app connects to Neon:**
+- **App queries** use `DATABASE_URL`, the pooled `-pooler` endpoint (PgBouncer). They go through Prisma's node-postgres driver adapter (`@prisma/adapter-pg`). On Vercel, `attachDatabasePool` closes idle connections before a function instance is suspended. See [`server/src/lib/prisma.ts`](server/src/lib/prisma.ts).
+- **Prisma Migrate** uses `DATABASE_URL_UNPOOLED` (`directUrl` in the schema), because migrations need a session that PgBouncer's transaction mode doesn't provide.
+
+Steps:
+
+1. **Database.** The project is linked to Neon through `neon.ts` / `.neon`. `neon deploy` writes `DATABASE_URL`, `DATABASE_URL_UNPOOLED` and `NEON_BRANCH` to `.env.local` (gitignored). The `dev` and `db:*` scripts load `.env.local` ahead of `server/.env`, so a Neon setup automatically replaces the Docker database.
+2. **Migrate and seed:**
+   ```bash
+   npm run db:deploy -w server     # applies migrations over the direct connection
+   npm run db:seed -w server       # loads the dataset (wipes app tables first)
+   ```
+3. **Deploy:**
+   ```bash
+   vercel login
+   vercel link                                      # repo root, no framework changes needed
+   vercel env add DATABASE_URL production           # pooled URL from .env.local
+   vercel env add DATABASE_URL_UNPOOLED production  # direct URL from .env.local
+   vercel env add JWT_SECRET production             # long random string
+   vercel env add ANTHROPIC_API_KEY production
+   vercel --prod
+   ```
+   Alternatively, import the GitHub repo in the Vercel dashboard and add the same four environment variables.
+
+### Docker (Render or any container host)
+
+The image serves the API and the built React app from one process. On boot it runs `prisma migrate deploy`, seeds the dataset **only if the database is empty**, then starts.
 
 **Render (blueprint included):** push the repo → Render → *New → Blueprint* → pick the repo. [`render.yaml`](render.yaml) provisions Postgres and the web service and generates `JWT_SECRET`. Then set `ANTHROPIC_API_KEY` in the service's Environment tab.
 
-**Anywhere else:** `docker build -t bookleaf-support .` then run the image with `DATABASE_URL`, `JWT_SECRET` and (optionally) `ANTHROPIC_API_KEY`. It listens on `PORT` (default 4000).
+**Anywhere else:** `docker build -t bookleaf-support .` then run the image with `DATABASE_URL`, `DATABASE_URL_UNPOOLED` (the same value unless your provider has a separate pooler), `JWT_SECRET` and (optionally) `ANTHROPIC_API_KEY`. It listens on `PORT` (default 4000).
 
 ---
 
 ## 7. Known limitations & next steps
 
 - **Single instance.** The SSE event bus and the classification queue are in-process. Scaling out would need Postgres `LISTEN/NOTIFY` or Redis pub/sub for events, and a durable queue (pg-boss/BullMQ) for AI jobs.
-- **Attachments are stored on local disk**, which is ephemeral on most PaaS hosts. Production would use S3/R2 with signed URLs and virus scanning.
+- **Attachments are stored on local disk** (`/tmp` on Vercel), which is ephemeral on most hosts. An uploaded file may 404 later, and the UI handles that. Production would use S3/R2 or Vercel Blob with signed URLs and virus scanning.
+- **Polling on Vercel.** Serverless functions can't hold SSE connections, so updates take up to 5 s there and cost one request per tab every 5 s. A hosted pub/sub (Pusher, Ably, Supabase Realtime) would restore push.
 - **The AI has no image understanding yet.** Misprint photos could be passed to the model (Claude accepts images) to pre-verify reprint claims.
 - **Classification quality is measured only by overrides.** Next would be a labelled eval set built from historical tickets, run on every prompt change, plus a review sample of sent AI-assisted replies.
 - **No email notifications.** Authors see updates in-app in real time. A production system would also email on admin replies.

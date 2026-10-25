@@ -78,12 +78,18 @@ export function useDraft(id: string, enabled: boolean) {
   });
 }
 
+interface Health {
+  realtime: "sse" | "poll";
+  ai: AiStatus;
+}
+
+export function useHealth() {
+  return useQuery({ queryKey: ["health"], queryFn: () => http.get<Health>("/health"), staleTime: 60_000 });
+}
+
 export function useAiStatus() {
-  return useQuery({
-    queryKey: ["ai-status"],
-    queryFn: () => http.get<{ ai: AiStatus }>("/health").then((r) => r.ai),
-    staleTime: 60_000,
-  });
+  const health = useHealth();
+  return { ...health, data: health.data?.ai };
 }
 
 export function useStats() {

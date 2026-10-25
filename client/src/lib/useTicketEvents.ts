@@ -3,19 +3,38 @@ import { useQueryClient } from "@tanstack/react-query";
 import { keys } from "../api/hooks";
 
 export type ConnectionState = "connecting" | "live" | "offline";
+export type RealtimeMode = "sse" | "poll";
+
+/** Poll interval used where SSE isn't available (serverless deploys). */
+const POLL_MS = 5_000;
 
 /**
- * Subscribes to the server's SSE stream and refreshes affected queries when
- * a ticket changes, so replies/status updates appear without a page refresh.
- * EventSource reconnects automatically; on reconnect we refetch everything
- * in case events were missed while offline.
+ * Keeps ticket data fresh so replies/status updates appear without a page
+ * refresh.
+ *
+ * - "sse": subscribes to the server's event stream and refreshes only the
+ *   affected queries. EventSource reconnects automatically; on reconnect we
+ *   refetch everything in case events were missed while offline.
+ * - "poll": on serverless hosts there is no long-lived process to push
+ *   events, so ticket queries are refreshed every few seconds while the tab
+ *   is visible.
  */
-export function useTicketEvents(enabled: boolean): ConnectionState {
+export function useTicketEvents(mode: RealtimeMode | undefined): ConnectionState {
   const queryClient = useQueryClient();
   const [state, setState] = useState<ConnectionState>("connecting");
 
   useEffect(() => {
-    if (!enabled) return;
+    if (mode !== "poll") return;
+    setState("live");
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      for (const queryKey of [["tickets"], ["ticket"], keys.stats]) void queryClient.invalidateQueries({ queryKey });
+    }, POLL_MS);
+    return () => clearInterval(timer);
+  }, [mode, queryClient]);
+
+  useEffect(() => {
+    if (mode !== "sse") return;
     const source = new EventSource("/api/events", { withCredentials: true });
     let hasConnectedBefore = false;
 
@@ -36,7 +55,7 @@ export function useTicketEvents(enabled: boolean): ConnectionState {
 
     source.onerror = () => setState("offline");
     return () => source.close();
-  }, [enabled, queryClient]);
+  }, [mode, queryClient]);
 
-  return enabled ? state : "offline";
+  return mode ? state : "connecting";
 }

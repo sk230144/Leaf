@@ -19,7 +19,8 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional().default(""),
   AI_MODEL: z.string().default("claude-haiku-5-5"),
   AI_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
-  UPLOAD_DIR: z.string().default("uploads"),
+  // Serverless filesystems are read-only except /tmp (files there are ephemeral).
+  UPLOAD_DIR: z.string().default(process.env.VERCEL ? "/tmp/uploads" : "uploads"),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -38,3 +39,9 @@ export const env = loadEnv();
 
 export const isProduction = env.NODE_ENV === "production";
 export const aiEnabled = env.ANTHROPIC_API_KEY.length > 0;
+
+/**
+ * Running as Vercel serverless functions: no long-lived process, so the
+ * in-memory SSE fan-out can't reach other instances and clients poll instead.
+ */
+export const isServerless = Boolean(process.env.VERCEL);

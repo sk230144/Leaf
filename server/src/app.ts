@@ -7,7 +7,7 @@ import helmet from "helmet";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yaml";
 import { aiStatus } from "./ai/llm";
-import { env, isProduction } from "./config/env";
+import { env, isProduction, isServerless } from "./config/env";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { adminRouter } from "./modules/admin/admin.routes";
 import { authRouter } from "./modules/auth/auth.routes";
@@ -32,7 +32,9 @@ export function createApp() {
 
   // --- API ---
   app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", ai: aiStatus() });
+    // Tells the client how to receive live updates: SSE on a long-lived
+    // server, short-interval polling on serverless.
+    res.json({ status: "ok", realtime: isServerless ? "poll" : "sse", ai: aiStatus() });
   });
   app.use("/api/auth", authRouter);
   app.use("/api/books", booksRouter);
@@ -40,8 +42,9 @@ export function createApp() {
   app.use("/api/admin", adminRouter);
   app.use("/api/events", eventsRouter);
 
-  const specPath = path.resolve(process.cwd(), "openapi.yaml");
-  if (fs.existsSync(specPath)) {
+  // cwd is server/ locally and in Docker, the repo root on Vercel.
+  const specPath = ["openapi.yaml", "server/openapi.yaml"].map((p) => path.resolve(process.cwd(), p)).find((p) => fs.existsSync(p));
+  if (specPath) {
     const spec = YAML.parse(fs.readFileSync(specPath, "utf8"));
     app.get("/api/openapi.json", (_req, res) => res.json(spec));
     app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(spec, { customSiteTitle: "BookLeaf Support API" }));

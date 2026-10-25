@@ -13,9 +13,8 @@
 import path from "node:path";
 import fs from "node:fs";
 import bcrypt from "bcryptjs";
-import { PrismaClient, type BookStage } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import type { BookStage } from "@prisma/client";
+import { prisma } from "../src/lib/prisma";
 
 const DEMO_PASSWORDS = { admin: "Admin@123", author: "Author@123" };
 

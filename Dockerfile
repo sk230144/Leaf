@@ -7,6 +7,7 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends openssl && r
 COPY package.json package-lock.json ./
 COPY server/package.json server/
 COPY client/package.json client/
+COPY server/prisma server/prisma
 RUN npm ci
 COPY . .
 RUN npm run build && npm prune --omit=dev

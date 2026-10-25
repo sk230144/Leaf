@@ -9,3 +9,5 @@ server/uploads/*
 
 # Assignment brief is confidential - never commit it
 *.pdf
+.vercel
+.neon
