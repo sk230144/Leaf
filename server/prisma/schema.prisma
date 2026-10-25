@@ -1,0 +1,297 @@
+// BookLeaf Author Support Portal - data model
+//
+// Money fields are stored as whole Indian Rupees (Int) because the source
+// data uses whole rupees and no fractional amounts exist in the domain.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  AUTHOR
+  ADMIN
+}
+
+/// Production pipeline from the BookLeaf knowledge base, in order.
+enum BookStage {
+  MANUSCRIPT_RECEIVED
+  EDITING
+  COVER_DESIGN
+  TYPESETTING
+  PROOFREADING
+  ISBN_ASSIGNMENT
+  PRINTING
+  DISTRIBUTION_SETUP
+  PUBLISHED_LIVE
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum TicketCategory {
+  ROYALTY_PAYMENTS
+  ISBN_METADATA
+  PRINTING_QUALITY
+  DISTRIBUTION_AVAILABILITY
+  BOOK_STATUS_PRODUCTION
+  GENERAL_INQUIRY
+}
+
+/// Declared most-urgent first: Postgres sorts enums by declaration order,
+/// so `ORDER BY priority ASC` puts CRITICAL at the top of the queue.
+enum TicketPriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+/// Where a ticket's category/priority came from.
+enum ClassificationSource {
+  AI // LLM classification
+  RULES // keyword fallback used when the AI is unavailable
+  ADMIN // manual override by an admin
+}
+
+enum AiJobStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum DraftSource {
+  AI
+  TEMPLATE // category template used when the AI is unavailable
+}
+
+enum AiOperation {
+  CLASSIFY
+  DRAFT
+}
+
+enum TicketEventType {
+  CREATED
+  CLASSIFIED
+  STATUS_CHANGED
+  CATEGORY_CHANGED
+  PRIORITY_CHANGED
+  ASSIGNED
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role
+  createdAt    DateTime @default(now())
+
+  author          Author?
+  assignedTickets Ticket[]        @relation("TicketAssignee")
+  messages        TicketMessage[]
+  notes           InternalNote[]
+  events          TicketEvent[]
+}
+
+/// Author profile. Uses the business ID from the source data (e.g. AUTH001).
+model Author {
+  id         String   @id
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phone      String?
+  city       String?
+  joinedDate DateTime @db.Date
+
+  books   Book[]
+  tickets Ticket[]
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Book {
+  id                    String    @id // business ID, e.g. BK001
+  authorId              String
+  author                Author    @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  title                 String
+  isbn                  String    @unique
+  genre                 String
+  stage                 BookStage
+  publicationDate       DateTime? @db.Date
+  mrp                   Int?
+  royaltyPerCopy        Int?
+  copiesSold            Int       @default(0)
+  royaltyEarned         Int       @default(0)
+  royaltyPaid           Int       @default(0)
+  royaltyPending        Int       @default(0)
+  lastRoyaltyPayoutDate DateTime? @db.Date
+  printPartner          String?
+  availableOn           String[]
+
+  tickets Ticket[]
+
+  @@index([authorId])
+}
+
+// ---------------------------------------------------------------------------
+// Support
+// ---------------------------------------------------------------------------
+
+model Ticket {
+  id          String       @id @default(cuid())
+  /// Human-friendly sequential number shown as BL-<number>
+  number      Int          @unique @default(autoincrement())
+  authorId    String
+  author      Author       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  /// Null means "General / Account level"
+  bookId      String?
+  book        Book?        @relation(fields: [bookId], references: [id], onDelete: SetNull)
+  subject     String
+  description String
+  status      TicketStatus @default(OPEN)
+
+  // Classification (AI, rule-based fallback, or admin override)
+  category         TicketCategory?
+  categorySource   ClassificationSource?
+  priority         TicketPriority?
+  prioritySource   ClassificationSource?
+  aiStatus         AiJobStatus           @default(PENDING)
+  aiConfidence     Float?
+  /// One-line triage summary produced alongside the classification
+  aiSummary        String?
+  aiError          String?
+
+  assigneeId String?
+  assignee   User?   @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  firstResponseAt DateTime?
+  resolvedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  messages    TicketMessage[]
+  notes       InternalNote[]
+  attachments Attachment[]
+  events      TicketEvent[]
+  draft       AiDraft?
+  aiUsage     AiUsageLog[]
+
+  @@index([status, priority, createdAt])
+  @@index([authorId, createdAt])
+  @@index([category])
+  @@index([assigneeId])
+}
+
+/// Public conversation thread (visible to the author).
+model TicketMessage {
+  id         String   @id @default(cuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  senderId   String
+  sender     User     @relation(fields: [senderId], references: [id])
+  senderRole Role
+  body       String
+  /// True when an admin sent a reply that started from the AI draft
+  fromAiDraft Boolean @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+/// Admin-only notes. Never serialized for authors.
+model InternalNote {
+  id        String   @id @default(cuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  adminId   String
+  admin     User     @relation(fields: [adminId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+model Attachment {
+  id           String   @id @default(cuid())
+  ticketId     String
+  ticket       Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  storageKey   String   @unique
+  createdAt    DateTime @default(now())
+}
+
+/// The current AI (or template) draft for a ticket. Cached so re-opening a
+/// ticket does not trigger another LLM call; regenerated when the thread
+/// changes (tracked by `messageCount`) or on explicit request.
+model AiDraft {
+  id              String        @id @default(cuid())
+  ticketId        String        @unique
+  ticket          Ticket        @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  source          DraftSource
+  content         String
+  suggestedStatus TicketStatus?
+  needsEscalation Boolean       @default(false)
+  escalationNote  String?
+  /// Facts the admin must confirm/fill in before sending
+  missingInfo     String[]
+  model           String?
+  messageCount    Int
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+/// Audit trail. Admin overrides of AI decisions are recorded here, which
+/// gives a running measure of classification accuracy.
+model TicketEvent {
+  id        String          @id @default(cuid())
+  ticketId  String
+  ticket    Ticket          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?           @relation(fields: [actorId], references: [id])
+  type      TicketEventType
+  fromValue String?
+  toValue   String?
+  createdAt DateTime        @default(now())
+
+  @@index([ticketId, createdAt])
+  @@index([type])
+}
+
+/// One row per LLM call, for cost and reliability monitoring.
+model AiUsageLog {
+  id               String      @id @default(cuid())
+  operation        AiOperation
+  ticketId         String?
+  ticket           Ticket?     @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  model            String
+  success          Boolean
+  errorType        String?
+  inputTokens      Int         @default(0)
+  outputTokens     Int         @default(0)
+  cacheReadTokens  Int         @default(0)
+  cacheWriteTokens Int         @default(0)
+  latencyMs        Int
+  createdAt        DateTime    @default(now())
+
+  @@index([createdAt])
+}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+coverage/
+server/uploads/*
+!server/uploads/.gitkeep
+
+# Assignment brief is confidential - never commit it
+*.pdf
