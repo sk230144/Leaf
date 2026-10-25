@@ -38,7 +38,7 @@ export async function classifyTicket(ticketId: string): Promise<void> {
       system: prompt.system,
       userContent: prompt.user,
       schema: ClassificationSchema,
-      maxTokens: 1024,
+      maxTokens: 2048, // includes thinking tokens
       effort: "low", // simple labelling task; low effort keeps it fast and cheap
     });
     result = { ...data, confidence: Math.min(1, Math.max(0, data.confidence)) };

@@ -1,16 +1,11 @@
 import { Router } from "express";
 import { aiStatus } from "../../ai/llm";
+import { estimateCostUsd } from "../../ai/pricing";
 import { prisma } from "../../lib/prisma";
 import { authenticate, requireRole } from "../../middleware/auth";
 
 export const adminRouter = Router();
 adminRouter.use(authenticate, requireRole("ADMIN"));
-
-/**
- * Indicative USD prices per million tokens for the default model
- * (claude-haiku-5-5). Used only for the dashboard's cost estimate.
- */
-const PRICE_PER_MTOK = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 };
 
 /** GET /api/admin/users - admins available for ticket assignment */
 adminRouter.get("/users", async (_req, res) => {
@@ -35,7 +30,7 @@ adminRouter.get("/stats", async (_req, res) => {
       prisma.ticket.count({ where: { ...active, firstResponseAt: null } }),
       prisma.ticket.findFirst({ where: active, orderBy: { createdAt: "asc" }, select: { createdAt: true } }),
       prisma.aiUsageLog.groupBy({
-        by: ["operation", "success"],
+        by: ["operation", "success", "model"],
         where: { createdAt: { gte: since } },
         _count: true,
         _sum: { inputTokens: true, outputTokens: true, cacheReadTokens: true, cacheWriteTokens: true },
@@ -55,16 +50,17 @@ adminRouter.get("/stats", async (_req, res) => {
       acc.outputTokens += row._sum.outputTokens ?? 0;
       acc.cacheReadTokens += row._sum.cacheReadTokens ?? 0;
       acc.cacheWriteTokens += row._sum.cacheWriteTokens ?? 0;
+      // Priced per model, since providers bill differently.
+      acc.estimatedCostUsd += estimateCostUsd(row.model, {
+        inputTokens: row._sum.inputTokens ?? 0,
+        outputTokens: row._sum.outputTokens ?? 0,
+        cacheReadTokens: row._sum.cacheReadTokens ?? 0,
+        cacheWriteTokens: row._sum.cacheWriteTokens ?? 0,
+      });
       return acc;
     },
-    { calls: 0, failures: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    { calls: 0, failures: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0 },
   );
-  const estimatedCostUsd =
-    (totals.inputTokens * PRICE_PER_MTOK.input +
-      totals.outputTokens * PRICE_PER_MTOK.output +
-      totals.cacheReadTokens * PRICE_PER_MTOK.cacheRead +
-      totals.cacheWriteTokens * PRICE_PER_MTOK.cacheWrite) /
-    1_000_000;
   const promptTokens = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens;
 
   res.json({
@@ -81,9 +77,10 @@ adminRouter.get("/stats", async (_req, res) => {
         last30Days: {
           ...totals,
           cacheHitRate: promptTokens ? totals.cacheReadTokens / promptTokens : 0,
-          estimatedCostUsd: Number(estimatedCostUsd.toFixed(4)),
+          estimatedCostUsd: Number(totals.estimatedCostUsd.toFixed(4)),
           byOperation: usage.map((row) => ({
             operation: row.operation,
+            model: row.model,
             success: row.success,
             calls: row._count,
             avgLatencyMs: Math.round(row._avg.latencyMs ?? 0),

@@ -38,6 +38,7 @@ function AiStatusCard({ ai }: { ai: AdminStats["ai"] }) {
         )}
       </div>
       <div className="mt-0.5 text-xs text-slate-500">
+        {ai.enabled && `${ai.model} · `}
         {ai.quality.draftAdoptionRate !== null ? `${Math.round(ai.quality.draftAdoptionRate * 100)}% of replies AI-assisted · ` : ""}
         {ai.quality.categoryOverrides} category overrides
       </div>

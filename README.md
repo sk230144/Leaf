@@ -40,13 +40,13 @@ The login page has one-click buttons that fill in these accounts.
 
 ## 1. Running locally
 
-**Prerequisites:** Node 20+ and Docker (for PostgreSQL). An Anthropic API key is optional. Without one, the app runs in degraded mode: rule-based triage and template drafts.
+**Prerequisites:** Node 20+ and Docker (for PostgreSQL, unless you use Neon; see §6). A Gemini API key ([free from Google AI Studio](https://aistudio.google.com/apikey)) is optional. Without one, the app runs in degraded mode: rule-based triage and template drafts.
 
 ```bash
 npm install                       # installs both workspaces
 npm run db:up                     # starts Postgres 16 in Docker (localhost:5432)
 cp server/.env.example server/.env
-#   then set JWT_SECRET, and ANTHROPIC_API_KEY if you have one
+#   then set JWT_SECRET, and GEMINI_API_KEY if you have one
 npm run db:setup                  # applies migrations + seeds the provided dataset
 npm run dev                       # API on :4000, web app on http://localhost:5173
 ```
@@ -54,7 +54,7 @@ npm run dev                       # API on :4000, web app on http://localhost:51
 | Command | What it does |
 |---|---|
 | `npm run dev` | API (`tsx watch`) + Vite dev server. Vite proxies `/api` so the browser sees one origin. |
-| `npm test` | Server test suite: 37 tests covering unit, API integration and SDK integration. Needs the seeded DB. |
+| `npm test` | Server test suite: 44 tests covering unit, API integration, and SDK integration for both AI providers. Needs the seeded DB. |
 | `npm run typecheck` | Strict TypeScript across both apps. |
 | `npm run build` | Production build of both apps. |
 | `npm run db:seed -w server` | Wipe and re-seed the database. |
@@ -77,7 +77,7 @@ The seed loads the provided JSON verbatim: 10 authors and 18 books. It also adds
                                                    │ domain/    royalty rules · production stages             │
                                                    └──────────────┬───────────────────────┬───────────────────┘
                                                                   │ Prisma                │ HTTPS (server-side key)
-                                                            PostgreSQL               Anthropic API
+                                                            PostgreSQL           Gemini API (or Claude)
 ```
 
 ### Stack and why
@@ -145,15 +145,14 @@ client/src/
 
 ## 3. AI integration
 
-### Model choice: Claude Haiku 5.5 (`claude-haiku-5-5`)
+### Model choice: Gemini 3.8 Flash (`gemini-3.8-flash`), with Claude as a drop-in alternative
 
-Both AI tasks are short and tightly specified: pick from fixed labels, or draft roughly 200 words grounded in supplied facts. They are also high-volume, and the draft must be ready in about the time it takes an admin to open the ticket. Haiku 5.5 suits this:
+Both AI tasks are short and tightly specified: pick from fixed labels, or draft roughly 200 words grounded in supplied facts. They are also high-volume, and the draft must be ready in about the time it takes an admin to open the ticket. That calls for a fast "Flash-class" model rather than a frontier one. Gemini 3.8 Flash suits this:
 
-- It costs $0.10 / $0.50 per million input/output tokens, with cache reads at $0.01.
-- It supports schema-constrained structured outputs and prompt caching.
-- It is fast enough to draft a reply while the page loads.
+- It has a **free tier**, so the app can be developed and demoed at no cost. Paid rates are $0.75 / $3.75 per million input/output tokens (Google's introductory price through 2026).
+- It supports JSON-Schema constrained output and adjustable thinking depth.
 
-The model is set by `AI_MODEL`, so moving the drafting step to a larger model, if quality review shows a need, is a config change.
+The AI layer is **provider-agnostic**. [`ai/providers/`](server/src/ai/providers) has a Gemini implementation (`@google/genai`) and a Claude implementation (`@anthropic-ai/sdk`) behind one interface. Prompts, schema validation, the circuit breaker, usage logging and fallbacks are shared. Switching is configuration only: `AI_PROVIDER=anthropic` plus `ANTHROPIC_API_KEY` uses Claude Haiku 5.5 ($0.10 / $0.50, with explicit prompt caching). `AI_MODEL` overrides the model, e.g. `gemini-3.5-flash-lite` for lower cost.
 
 ### What the AI does
 
@@ -162,7 +161,7 @@ The model is set by `AI_MODEL`, so moving the drafting step to a larger model, i
 | **Classify + prioritise** (one call) | Background job right after ticket creation | Subject, description (clipped to 4,000 chars), a one-line account summary (e.g. "royalty paid ₹0, pending ₹2,546, last payout never, payout possibly overdue") | `{ category, priority, confidence, summary }` |
 | **Draft reply** | When an admin opens the ticket | Category-scoped KB, facts about the referenced book, payout schedule, last 6 messages of the thread | `{ reply, suggested_status, needs_escalation, escalation_note, missing_info[] }` |
 
-Both calls use **structured outputs** (`output_config.format` generated from zod schemas and validated by the SDK's `messages.parse`). There is no regex JSON parsing. Output that doesn't match the schema is rejected and handled like any other AI failure.
+Both calls use **structured outputs**. The zod schemas are converted to JSON Schema: `responseJsonSchema` on Gemini, `output_config.format` on Claude. The result is then validated with zod in the shared layer, whichever provider produced it. There is no regex JSON parsing. Output that doesn't match the schema is rejected and handled like any other AI failure.
 
 ### Prompt strategy
 
@@ -178,35 +177,39 @@ Prompts are in [`server/src/ai/prompts.ts`](server/src/ai/prompts.ts); the knowl
 
 ### Cost management
 
-Approximate per-call token counts (characters ÷ 4) with Haiku 5.5 pricing:
+Prompt sizes below are approximate token counts (characters ÷ 4).
 
 | Lever | Effect |
 |---|---|
 | **One call for category + priority** | Half the calls a naive design would make. |
 | **Only the relevant KB is sent.** Each category maps to its policy sections. | Royalty drafts carry about 1,000 system tokens and printing drafts about 870, versus about 1,400 for the full KB plus examples. |
-| **Prompt caching.** System prompts are fully static, with cache breakpoints after the shared segment (role, rules, company, tone: about 690 tokens) and after the category segment. | At most 7 distinct prefixes exist (1 classifier + 6 draft categories). After the first call each is a cache read at 10% of the input price. A unit test asserts the system prompts stay byte-identical across tickets, because a timestamp in a system prompt would silently break caching. |
+| **Cache-friendly prompts.** System prompts are fully static, ordered stable → specific: the shared segment (role, rules, company, tone: about 690 tokens), then the category segment. At most 7 distinct prefixes exist (1 classifier + 6 draft categories). A unit test asserts system prompts stay byte-identical across tickets. | On **Claude** these segments are explicit cache breakpoints, read back at 10% of the input price. On **Gemini**, caching is implicit and only starts at 4,096 prompt tokens on 3.8 Flash. Our prompts are about 900–1,400 tokens, precisely because of the scoped KB, so they currently fall below that and are billed in full. Cached tokens are still recorded if a longer prompt does qualify. |
 | **Drafts are cached in the DB** and regenerated only when the thread changes or the admin clicks Regenerate. Concurrent opens share one in-flight call. | Re-opening a ticket or a second admin viewing it costs nothing. |
 | **Bounded context.** Only the ticket's own book (or the author's books for account-level tickets) is sent, plus the original query and the last 6 messages, each clipped. Never the full history or other tickets. | Prompt size stays flat as threads grow. |
-| **Effort tuned per task.** `low` for classification, `medium` for drafting. | Less thinking-token spend on the simple task. |
+| **Thinking depth tuned per task.** Effort `low` for classification, `medium` for drafting, mapped to Gemini `thinkingLevel` (or Claude effort). | Less thinking-token spend on the simple task. Thinking tokens are billed as output and logged as such. |
 | **Usage logged per call.** The admin dashboard shows 30-day calls, estimated cost and cache-hit rate. | Spend is visible, not guessed. |
 
-Rough estimate: about $0.0001 per classification and $0.0003 per draft, so under $5 for 10,000 tickets a month. Thinking tokens and long threads raise this. The `AiUsageLog` table gives the real figure once live traffic flows.
+Rough estimate at Gemini 3.8 Flash paid rates:
+- **Classification:** about 900 input and about 300 output tokens including thinking, roughly $0.002.
+- **Draft:** about 1,500 input and about 1,200 output tokens, roughly $0.006.
+
+That's about $80 for 10,000 tickets a month, and $0 within the free tier. The same workload on Claude Haiku 5.5 would be roughly $10. Actual thinking-token use varies, which is why every call is logged: the admin dashboard prices real usage per model (see [`ai/pricing.ts`](server/src/ai/pricing.ts)).
 
 ### Error handling and graceful degradation
 
-All AI calls go through [`ai/llm.ts`](server/src/ai/llm.ts). It maps the SDK's typed errors (`RateLimitError`, `APIConnectionError`, `InternalServerError`, `AuthenticationError`, and so on) to a small set of failure kinds and throws a single `AiUnavailableError`, so each feature has exactly one thing to catch.
+All AI calls go through [`ai/llm.ts`](server/src/ai/llm.ts). Each provider maps its SDK's errors (Gemini `ApiError` status codes, including the 400 `API_KEY_INVALID`; Anthropic's typed `RateLimitError`, `APIConnectionError` and so on) to a small set of failure kinds. The shared layer throws a single `AiUnavailableError`, so each feature has exactly one thing to catch.
 
 | Situation | What happens |
 |---|---|
-| Transient 429 / 5xx / network blip | The SDK retries twice with backoff; the timeout is 20 s. |
+| Transient 429 / 5xx / network blip | The SDK retries twice with exponential backoff; the timeout is 20 s. |
 | Repeated failures (3 in a row) | The **circuit breaker** opens for 60 s (10 min for a bad key). Calls fail fast instead of piling up. The dashboard shows "AI: Paused". |
 | AI down when a ticket is created | The ticket is created instantly regardless, since classification runs in the background. **Keyword rules** classify it, marked `RULES` in the UI, so the queue still sorts sensibly. An admin can click "Retry with AI" later. |
 | AI down when an admin opens a ticket | A **category template draft** is loaded, using the author's real numbers. A banner explains why, and the admin edits and sends it normally. Once the AI is back, the template is upgraded to an AI draft on next open. |
-| Model output fails schema validation or is refused | Treated as a per-request failure (falls back, doesn't trip the breaker). |
-| No `ANTHROPIC_API_KEY` | The app runs fully on rules and templates. This mode is what the test suite exercises. |
+| Model output fails schema validation, or is refused / safety-blocked | Treated as a per-request failure (falls back, doesn't trip the breaker). |
+| No API key for the selected provider | The app runs fully on rules and templates. This mode is what the test suite exercises. |
 | Server restarts mid-classification | Tickets left `PENDING` are re-queued on boot. |
 
-**Key security:** `ANTHROPIC_API_KEY` is read only in `server/src/config/env.ts` and used only in `ai/llm.ts`. It is never sent to the client, and the browser never talks to Anthropic.
+**Key security:** `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` are read only in `server/src/config/env.ts` and passed only to the provider clients in `ai/providers/`. They are never sent to the client, and the browser never talks to the AI provider.
 
 ---
 
@@ -260,11 +263,12 @@ npm test     # requires the seeded local database
   - the fallback classifier against the sample queries from the brief;
   - template drafts;
   - prompt invariants: system prompts byte-stable for caching, KB scoped per category, untrusted text kept out of the system prompt.
-- **`ai/llm.test.ts`** runs the real Anthropic SDK against a local fake Messages API. It checks:
-  - the request shape (cache breakpoints, JSON schema, effort);
-  - response parsing and usage logging;
+- **`ai/llm.gemini.test.ts`** and **`ai/llm.anthropic.test.ts`** run each provider's real SDK against a local fake API. They check:
+  - the request shape: system instruction or cache breakpoints, JSON schema, thinking level or effort;
+  - response parsing and usage logging, with thinking tokens counted as output and cache hits split out;
   - 429 → retries → circuit breaker opening;
-  - schema-invalid output being rejected without tripping the breaker.
+  - an invalid key treated as an auth failure;
+  - safety blocks and schema-invalid output rejected without tripping the breaker.
 - **`api.test.ts`** (supertest) covers:
   - authentication, and every route being protected;
   - authors isolated from each other (404s) and never receiving triage fields;
@@ -314,7 +318,7 @@ Steps:
    vercel env add DATABASE_URL production           # pooled URL from .env.local
    vercel env add DATABASE_URL_UNPOOLED production  # direct URL from .env.local
    vercel env add JWT_SECRET production             # long random string
-   vercel env add ANTHROPIC_API_KEY production
+   vercel env add GEMINI_API_KEY production       # AI_PROVIDER defaults to gemini
    vercel --prod
    ```
    Alternatively, import the GitHub repo in the Vercel dashboard and add the same four environment variables.
@@ -323,9 +327,9 @@ Steps:
 
 The image serves the API and the built React app from one process. On boot it runs `prisma migrate deploy`, seeds the dataset **only if the database is empty**, then starts.
 
-**Render (blueprint included):** push the repo → Render → *New → Blueprint* → pick the repo. [`render.yaml`](render.yaml) provisions Postgres and the web service and generates `JWT_SECRET`. Then set `ANTHROPIC_API_KEY` in the service's Environment tab.
+**Render (blueprint included):** push the repo → Render → *New → Blueprint* → pick the repo. [`render.yaml`](render.yaml) provisions Postgres and the web service and generates `JWT_SECRET`. Then set `GEMINI_API_KEY` in the service's Environment tab.
 
-**Anywhere else:** `docker build -t bookleaf-support .` then run the image with `DATABASE_URL`, `DATABASE_URL_UNPOOLED` (the same value unless your provider has a separate pooler), `JWT_SECRET` and (optionally) `ANTHROPIC_API_KEY`. It listens on `PORT` (default 4000).
+**Anywhere else:** `docker build -t bookleaf-support .` then run the image with `DATABASE_URL`, `DATABASE_URL_UNPOOLED` (the same value unless your provider has a separate pooler), `JWT_SECRET` and (optionally) `GEMINI_API_KEY`. It listens on `PORT` (default 4000).
 
 ---
 
@@ -334,7 +338,7 @@ The image serves the API and the built React app from one process. On boot it ru
 - **Single instance.** The SSE event bus and the classification queue are in-process. Scaling out would need Postgres `LISTEN/NOTIFY` or Redis pub/sub for events, and a durable queue (pg-boss/BullMQ) for AI jobs.
 - **Attachments are stored on local disk** (`/tmp` on Vercel), which is ephemeral on most hosts. An uploaded file may 404 later, and the UI handles that. Production would use S3/R2 or Vercel Blob with signed URLs and virus scanning.
 - **Polling on Vercel.** Serverless functions can't hold SSE connections, so updates take up to 5 s there and cost one request per tab every 5 s. A hosted pub/sub (Pusher, Ably, Supabase Realtime) would restore push.
-- **The AI has no image understanding yet.** Misprint photos could be passed to the model (Claude accepts images) to pre-verify reprint claims.
+- **The AI has no image understanding yet.** Misprint photos could be passed to the model (both Gemini and Claude accept images) to pre-verify reprint claims.
 - **Classification quality is measured only by overrides.** Next would be a labelled eval set built from historical tickets, run on every prompt change, plus a review sample of sent AI-assisted replies.
 - **No email notifications.** Authors see updates in-app in real time. A production system would also email on admin replies.
 - **Auth is basic by design** (per the brief). There is no password reset, refresh-token rotation or SSO for staff.

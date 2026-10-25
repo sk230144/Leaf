@@ -46,6 +46,7 @@ paths:
                 type: object
                 properties:
                   status: { type: string, example: ok }
+                  realtime: { type: string, enum: [sse, poll], description: "How clients receive live updates on this deployment" }
                   ai: { $ref: "#/components/schemas/AiStatus" }
 
   /auth/login:
@@ -542,7 +543,8 @@ components:
       properties:
         enabled: { type: boolean, description: "An API key is configured" }
         available: { type: boolean, description: "Enabled and the circuit breaker is closed" }
-        model: { type: string, example: claude-haiku-5-5 }
+        provider: { type: string, enum: [gemini, anthropic] }
+        model: { type: string, example: gemini-3.8-flash }
         retryAt: { type: string, format: date-time, nullable: true }
 
     DraftResponse:

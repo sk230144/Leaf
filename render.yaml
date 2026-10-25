@@ -1,6 +1,6 @@
 # Render Blueprint: Postgres + one Docker web service (API + built frontend).
 # Deploy: Render dashboard -> New -> Blueprint -> select this repo, then set
-# ANTHROPIC_API_KEY in the service's Environment tab.
+# GEMINI_API_KEY in the service's Environment tab.
 databases:
   - name: bookleaf-db
     plan: free
@@ -24,9 +24,9 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
-      - key: ANTHROPIC_API_KEY
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
         sync: false
-      - key: AI_MODEL
-        value: claude-haiku-5-5
       - key: NODE_ENV
         value: production

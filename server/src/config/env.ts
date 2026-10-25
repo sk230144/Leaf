@@ -3,7 +3,7 @@ import { z } from "zod";
 /**
  * All configuration comes from environment variables and is validated once at
  * startup, so a misconfigured deploy fails fast instead of at first request.
- * Secrets (JWT_SECRET, ANTHROPIC_API_KEY) are only ever read here, on the
+ * Secrets (JWT_SECRET, ANTHROPIC_API_KEY, GEMINI_API_KEY) are only ever read here, on the
  * server - nothing in this module is sent to the browser.
  */
 const EnvSchema = z.object({
@@ -16,8 +16,12 @@ const EnvSchema = z.object({
     .string()
     .default("http://localhost:5173")
     .transform((value) => value.split(",").map((origin) => origin.trim()).filter(Boolean)),
+  /** "gemini" or "anthropic". If unset, whichever provider has a key is used (Gemini preferred). */
+  AI_PROVIDER: z.enum(["gemini", "anthropic"]).optional().or(z.literal("").transform(() => undefined)),
+  GEMINI_API_KEY: z.string().optional().default(""),
   ANTHROPIC_API_KEY: z.string().optional().default(""),
-  AI_MODEL: z.string().default("claude-haiku-5-5"),
+  /** Model override; empty = the provider's default (see DEFAULT_MODELS). */
+  AI_MODEL: z.string().optional().default(""),
   AI_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
   // Serverless filesystems are read-only except /tmp (files there are ephemeral).
   UPLOAD_DIR: z.string().default(process.env.VERCEL ? "/tmp/uploads" : "uploads"),
@@ -38,7 +42,18 @@ function loadEnv(): Env {
 export const env = loadEnv();
 
 export const isProduction = env.NODE_ENV === "production";
-export const aiEnabled = env.ANTHROPIC_API_KEY.length > 0;
+
+export type AiProvider = "gemini" | "anthropic";
+
+const DEFAULT_MODELS: Record<AiProvider, string> = {
+  gemini: "gemini-3.8-flash",
+  anthropic: "claude-haiku-5-5",
+};
+
+export const aiProvider: AiProvider = env.AI_PROVIDER ?? (env.GEMINI_API_KEY || !env.ANTHROPIC_API_KEY ? "gemini" : "anthropic");
+export const aiApiKey = aiProvider === "gemini" ? env.GEMINI_API_KEY : env.ANTHROPIC_API_KEY;
+export const aiModel = env.AI_MODEL || DEFAULT_MODELS[aiProvider];
+export const aiEnabled = aiApiKey.length > 0;
 
 /**
  * Running as Vercel serverless functions: no long-lived process, so the

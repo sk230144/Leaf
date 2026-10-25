@@ -1,5 +1,5 @@
 /**
- * Exercises the real Anthropic SDK against a local fake Messages API, so the
+ * Claude provider: exercises the real Anthropic SDK against a local fake Messages API, so the
  * request we build (cache breakpoints, structured-output schema, effort) and
  * the failure handling (rate limits -> circuit breaker) are tested without a
  * real API key or network access.
@@ -47,6 +47,7 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => server.listen(0, resolve));
 
+  process.env.AI_PROVIDER = "anthropic";
   process.env.ANTHROPIC_API_KEY = "test-key";
   process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   // Import after env is set: the client is configured at module load.
@@ -102,7 +103,7 @@ describe("callStructured", () => {
     await new Promise((r) => setTimeout(r, 200)); // usage is logged fire-and-forget
 
     const log = await prisma.aiUsageLog.findFirst({
-      where: { createdAt: { gte: since }, success: true },
+      where: { createdAt: { gte: since }, success: true, model: "claude-haiku-5-5" },
       orderBy: { createdAt: "desc" },
     });
     expect(log).toMatchObject({ operation: "CLASSIFY", inputTokens: 120, outputTokens: 40, cacheReadTokens: 900 });

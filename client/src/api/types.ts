@@ -130,6 +130,7 @@ export interface Pagination {
 export interface AiStatus {
   enabled: boolean;
   available: boolean;
+  provider: "gemini" | "anthropic";
   model: string;
   retryAt: string | null;
 }

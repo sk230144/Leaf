@@ -31,7 +31,7 @@
 ## Trade-offs
 
 - **SSE and an in-process queue rather than Redis or a job broker.** Simple, with fewer moving parts to deploy, and enough for one instance. The cost is horizontal scaling (see below).
-- **Haiku over a larger model.** The tasks are narrow and grounded in supplied facts, so the cheaper, faster model is the right default. The model is one env var if review shows the drafts need more.
+- **A Flash-class model over a frontier one.** The tasks are narrow and grounded in supplied facts, so a fast, cheap model is the right default. Gemini 3.8 Flash is the default because its free tier makes development and the demo cost nothing. The AI layer is provider-agnostic, so Claude Haiku (cheaper at paid volume, with explicit prompt caching) or a larger model is one env var away.
 - **Templates and rules as fallbacks.** They're deliberately simple and transparent rather than clever. Their job is to keep the desk running, not to compete with the model.
 - **Attachments on local disk** and **basic email/password auth**, as the brief allows. Both are flagged as limitations.
 

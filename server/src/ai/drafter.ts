@@ -70,7 +70,7 @@ async function resolveDraft(ticketId: string, regenerate: boolean): Promise<Draf
       system: buildDraftSystem(category),
       userContent: buildUserPrompt(ticket),
       schema: DraftSchema,
-      maxTokens: 4000,
+      maxTokens: 8000, // includes thinking tokens
       effort: "medium",
     });
     const draft = await saveDraft(ticketId, {
